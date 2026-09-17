@@ -1,72 +1,39 @@
-import os
-import io
 import base64
+import io
+import os
 import uuid
-from urllib.parse import quote
+from datetime import datetime, timezone
+from typing import Optional
 
 import httpx
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
 from huggingface_hub import InferenceClient
+from PIL import Image
+from pydantic import BaseModel, Field
 
 
 # ============================================================
-# ENVIRONMENT
+# LOAD ENVIRONMENT VARIABLES
 # ============================================================
 
 load_dotenv()
 
-HF_TOKEN = os.getenv("HF_TOKEN")
 
+HF_TOKEN = os.getenv("HF_TOKEN")
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_SECRET_KEY = os.getenv("SUPABASE_SECRET_KEY")
-
-# Backward compatibility if you still use the old key name.
-if not SUPABASE_SECRET_KEY:
-    SUPABASE_SECRET_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
-
-SUPABASE_BUCKET = os.getenv(
-    "SUPABASE_BUCKET",
-    "artworks",
-)
+SUPABASE_BUCKET = os.getenv("SUPABASE_BUCKET", "artworks")
 
 
 # ============================================================
-# VALIDATION
-# ============================================================
-
-if not HF_TOKEN:
-    print("WARNING: HF_TOKEN is not configured.")
-
-if not SUPABASE_URL:
-    print("WARNING: SUPABASE_URL is not configured.")
-
-if not SUPABASE_SECRET_KEY:
-    print("WARNING: SUPABASE_SECRET_KEY is not configured.")
-
-
-# ============================================================
-# HUGGING FACE CLIENT
-# ============================================================
-
-hf_client = (
-    InferenceClient(
-        provider="auto",
-        api_key=HF_TOKEN,
-    )
-    if HF_TOKEN
-    else None
-)
-
-
-# ============================================================
-# FASTAPI
+# APP
 # ============================================================
 
 app = FastAPI(
     title="ArtMotion AI",
+    description="AI artwork generation backend",
     version="1.0.0",
 )
 
@@ -78,8 +45,12 @@ app = FastAPI(
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
+        # Local development
         "http://localhost:5173",
         "http://127.0.0.1:5173",
+
+        # Production frontend
+        "https://artmotion-ai.vercel.app",
     ],
     allow_credentials=True,
     allow_methods=["*"],
@@ -88,88 +59,277 @@ app.add_middleware(
 
 
 # ============================================================
-# REQUEST MODELS
+# HUGGING FACE CLIENT
 # ============================================================
 
+if HF_TOKEN:
+    hf_client = InferenceClient(
+        provider="hf-inference",
+        api_key=HF_TOKEN,
+    )
+else:
+    hf_client = None
+
+
+# ============================================================
+# MODELS
+# ============================================================
+
+
 class GenerateArtRequest(BaseModel):
-    prompt: str
+    prompt: str = Field(..., min_length=1, max_length=2000)
     style: str = "Digital Art"
     aspect_ratio: str = "1:1"
-    project_name: str | None = None
-
-
-class CreateProjectRequest(BaseModel):
-    name: str
-    image_url: str
-    prompt: str | None = None
-    style: str | None = None
-    aspect_ratio: str | None = None
+    project_name: Optional[str] = "My AI Artwork"
 
 
 class RenameProjectRequest(BaseModel):
-    name: str
+    name: str = Field(..., min_length=1, max_length=200)
 
 
 # ============================================================
 # HELPERS
 # ============================================================
 
-def check_supabase():
-    if not SUPABASE_URL:
-        raise HTTPException(
-            status_code=500,
-            detail="SUPABASE_URL is not configured in backend/.env",
-        )
 
-    if not SUPABASE_SECRET_KEY:
+def require_huggingface():
+    if not HF_TOKEN or not hf_client:
         raise HTTPException(
             status_code=500,
-            detail=(
-                "SUPABASE_SECRET_KEY is not configured "
-                "in backend/.env"
-            ),
+            detail="Hugging Face API is not configured on the backend.",
         )
 
 
-def supabase_headers():
-    check_supabase()
+def require_supabase():
+    if not SUPABASE_URL or not SUPABASE_SECRET_KEY:
+        raise HTTPException(
+            status_code=500,
+            detail="Supabase is not configured on the backend.",
+        )
+
+
+def get_supabase_headers() -> dict:
+    require_supabase()
 
     return {
         "apikey": SUPABASE_SECRET_KEY,
         "Authorization": f"Bearer {SUPABASE_SECRET_KEY}",
+        "Content-Type": "application/json",
     }
 
 
-def generate_project_name(prompt: str) -> str:
+def get_image_dimensions(aspect_ratio: str) -> tuple[int, int]:
     """
-    Creates a simple project name from the prompt.
+    Convert the selected aspect ratio into dimensions.
+
+    FLUX generation dimensions are kept reasonably sized
+    so the free Hugging Face inference endpoint is practical.
     """
 
-    cleaned = " ".join(prompt.strip().split())
+    ratio_map = {
+        "1:1": (768, 768),
+        "16:9": (1024, 576),
+        "9:16": (576, 1024),
+        "4:3": (896, 672),
+    }
 
-    if not cleaned:
-        return "Untitled Artwork"
-
-    words = cleaned.split()
-
-    name = " ".join(words[:5])
-
-    if len(words) > 5:
-        name += "..."
-
-    return name
+    return ratio_map.get(aspect_ratio, (768, 768))
 
 
-def get_public_image_url(filename: str) -> str:
+def build_prompt(prompt: str, style: str) -> str:
+    """
+    Create the final image-generation prompt.
+    """
+
     return (
-        f"{SUPABASE_URL}/storage/v1/object/public/"
-        f"{SUPABASE_BUCKET}/{quote(filename)}"
+        f"{prompt}. "
+        f"Art style: {style}. "
+        "High quality digital artwork, detailed composition, "
+        "professional lighting, visually appealing, sharp details."
     )
+
+
+def image_to_jpeg_bytes(image: Image.Image) -> bytes:
+    """
+    Convert generated image into JPEG bytes.
+    """
+
+    if image.mode not in ("RGB", "L"):
+        image = image.convert("RGB")
+
+    output = io.BytesIO()
+
+    image.save(
+        output,
+        format="JPEG",
+        quality=95,
+        optimize=True,
+    )
+
+    return output.getvalue()
+
+
+def upload_to_supabase(
+    image_bytes: bytes,
+    filename: str,
+) -> str:
+    """
+    Upload artwork to Supabase Storage and return
+    its public URL.
+    """
+
+    require_supabase()
+
+    upload_url = (
+        f"{SUPABASE_URL}/storage/v1/object/"
+        f"{SUPABASE_BUCKET}/{filename}"
+    )
+
+    headers = {
+        "apikey": SUPABASE_SECRET_KEY,
+        "Authorization": f"Bearer {SUPABASE_SECRET_KEY}",
+        "Content-Type": "image/jpeg",
+        "x-upsert": "false",
+    }
+
+    try:
+        response = httpx.post(
+            upload_url,
+            headers=headers,
+            content=image_bytes,
+            timeout=120.0,
+        )
+    except httpx.RequestError as exc:
+        raise HTTPException(
+            status_code=502,
+            detail=f"Supabase storage connection failed: {exc}",
+        ) from exc
+
+    if response.status_code >= 400:
+        try:
+            error_data = response.json()
+        except Exception:
+            error_data = response.text
+
+        raise HTTPException(
+            status_code=500,
+            detail=f"Supabase storage upload failed: {error_data}",
+        )
+
+    public_url = (
+        f"{SUPABASE_URL}/storage/v1/object/public/"
+        f"{SUPABASE_BUCKET}/{filename}"
+    )
+
+    return public_url
+
+
+def create_project(
+    name: str,
+    filename: str,
+    image_url: str,
+    prompt: str,
+    style: str,
+    aspect_ratio: str,
+) -> dict:
+    """
+    Save project metadata into Supabase.
+    """
+
+    require_supabase()
+
+    project = {
+        "name": name,
+        "filename": filename,
+        "image_url": image_url,
+        "prompt": prompt,
+        "style": style,
+        "aspect_ratio": aspect_ratio,
+    }
+
+    url = f"{SUPABASE_URL}/rest/v1/projects"
+
+    headers = get_supabase_headers()
+    headers["Prefer"] = "return=representation"
+
+    try:
+        response = httpx.post(
+            url,
+            headers=headers,
+            json=project,
+            timeout=30.0,
+        )
+    except httpx.RequestError as exc:
+        raise HTTPException(
+            status_code=502,
+            detail=f"Supabase database connection failed: {exc}",
+        ) from exc
+
+    if response.status_code >= 400:
+        try:
+            error_data = response.json()
+        except Exception:
+            error_data = response.text
+
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to save project: {error_data}",
+        )
+
+    data = response.json()
+
+    if isinstance(data, list) and data:
+        return data[0]
+
+    return project
+
+
+def delete_supabase_file(filename: str):
+    """
+    Delete artwork from Supabase Storage.
+    """
+
+    require_supabase()
+
+    url = (
+        f"{SUPABASE_URL}/storage/v1/object/"
+        f"{SUPABASE_BUCKET}/{filename}"
+    )
+
+    headers = {
+        "apikey": SUPABASE_SECRET_KEY,
+        "Authorization": f"Bearer {SUPABASE_SECRET_KEY}",
+        "Content-Type": "application/json",
+    }
+
+    try:
+        response = httpx.delete(
+            url,
+            headers=headers,
+            timeout=30.0,
+        )
+    except httpx.RequestError as exc:
+        raise HTTPException(
+            status_code=502,
+            detail=f"Supabase storage connection failed: {exc}",
+        ) from exc
+
+    if response.status_code >= 400:
+        try:
+            error_data = response.json()
+        except Exception:
+            error_data = response.text
+
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to delete artwork: {error_data}",
+        )
 
 
 # ============================================================
 # ROOT
 # ============================================================
+
 
 @app.get("/")
 def root():
@@ -183,14 +343,16 @@ def root():
 # HEALTH
 # ============================================================
 
+
 @app.get("/health")
-def health_check():
+def health():
     return {
         "status": "healthy",
+        "service": "ArtMotion AI backend",
+        "huggingface_configured": bool(HF_TOKEN),
         "supabase_configured": bool(
             SUPABASE_URL and SUPABASE_SECRET_KEY
         ),
-        "huggingface_configured": bool(HF_TOKEN),
     }
 
 
@@ -198,82 +360,39 @@ def health_check():
 # GENERATE ART
 # ============================================================
 
+
 @app.post("/generate-art")
 def generate_art(request: GenerateArtRequest):
+    """
+    Generate artwork using Hugging Face FLUX.1-schnell,
+    upload it to Supabase Storage, and save project metadata.
+    """
 
-    if not hf_client:
-        raise HTTPException(
-            status_code=500,
-            detail="HF_TOKEN is not configured in backend/.env",
-        )
+    require_huggingface()
+    require_supabase()
 
-    check_supabase()
+    prompt = request.prompt.strip()
 
-    if not request.prompt.strip():
+    if not prompt:
         raise HTTPException(
             status_code=400,
             detail="Prompt cannot be empty.",
         )
 
-    # --------------------------------------------------------
-    # IMAGE SIZE
-    # --------------------------------------------------------
-
-    aspect_sizes = {
-        "1:1": (1024, 1024),
-        "16:9": (1152, 648),
-        "9:16": (648, 1152),
-        "4:3": (1024, 768),
-    }
-
-    width, height = aspect_sizes.get(
-        request.aspect_ratio,
-        (1024, 1024),
+    width, height = get_image_dimensions(
+        request.aspect_ratio
     )
 
-    # --------------------------------------------------------
-    # PROMPT
-    # --------------------------------------------------------
-
-    final_prompt = f"""
-Create a high-quality artwork based on this description:
-
-{request.prompt}
-
-Art style:
-{request.style}
-
-Requirements:
-
-- Professional artistic composition
-- Strong lighting
-- Beautiful colors
-- High visual detail
-- Cinematic quality where appropriate
-- Clean composition
-- Visually impressive
-- No unnecessary text
-- No watermark
-
-Aspect ratio:
-{request.aspect_ratio}
-"""
+    final_prompt = build_prompt(
+        prompt,
+        request.style,
+    )
 
     # --------------------------------------------------------
     # GENERATE IMAGE
     # --------------------------------------------------------
 
     try:
-
-        print()
-        print("=" * 60)
-        print("GENERATING ARTWORK")
-        print("=" * 60)
-        print("Model: black-forest-labs/FLUX.1-schnell")
-        print("Style:", request.style)
-        print("Aspect ratio:", request.aspect_ratio)
-        print("Prompt:", request.prompt)
-
         image = hf_client.text_to_image(
             prompt=final_prompt,
             model="black-forest-labs/FLUX.1-schnell",
@@ -281,584 +400,313 @@ Aspect ratio:
             height=height,
         )
 
-        if image is None:
-            raise HTTPException(
-                status_code=500,
-                detail="Hugging Face did not return an image.",
-            )
-
-        # ----------------------------------------------------
-        # CONVERT IMAGE TO JPEG
-        # ----------------------------------------------------
-
-        image_buffer = io.BytesIO()
-
-        image.convert("RGB").save(
-            image_buffer,
-            format="JPEG",
-            quality=92,
-        )
-
-        image_bytes = image_buffer.getvalue()
-
-        # ----------------------------------------------------
-        # CREATE UNIQUE FILE NAME
-        # ----------------------------------------------------
-
-        filename = (
-            f"art_{uuid.uuid4().hex}.jpg"
-        )
-
-        print("Storage filename:", filename)
-
-        # ----------------------------------------------------
-        # UPLOAD TO SUPABASE STORAGE
-        # ----------------------------------------------------
-
-        storage_url = (
-            f"{SUPABASE_URL}/storage/v1/object/"
-            f"{SUPABASE_BUCKET}/{quote(filename)}"
-        )
-
-        storage_headers = {
-            **supabase_headers(),
-            "Content-Type": "image/jpeg",
-            "x-upsert": "false",
-        }
-
-        print("Uploading image to Supabase...")
-
-        with httpx.Client(timeout=120.0) as http_client:
-
-            storage_response = http_client.post(
-                storage_url,
-                headers=storage_headers,
-                content=image_bytes,
-            )
-
-        if storage_response.status_code not in (200, 201):
-
-            print(
-                "Supabase Storage error:",
-                storage_response.text,
-            )
-
-            raise HTTPException(
-                status_code=500,
-                detail=(
-                    "Failed to upload image to Supabase Storage: "
-                    f"{storage_response.text}"
-                ),
-            )
-
-        print("Image uploaded successfully.")
-
-        # ----------------------------------------------------
-        # PUBLIC IMAGE URL
-        # ----------------------------------------------------
-
-        image_url = get_public_image_url(
-            filename
-        )
-
-        # ----------------------------------------------------
-        # PROJECT NAME
-        # ----------------------------------------------------
-
-        project_name = (
-            request.project_name.strip()
-            if request.project_name
-            and request.project_name.strip()
-            else generate_project_name(
-                request.prompt
-            )
-        )
-
-        # ----------------------------------------------------
-        # SAVE PROJECT TO SUPABASE DATABASE
-        # ----------------------------------------------------
-
-        project_data = {
-            "name": project_name,
-            "filename": filename,
-            "image_url": image_url,
-            "prompt": request.prompt,
-            "style": request.style,
-            "aspect_ratio": request.aspect_ratio,
-        }
-
-        database_url = (
-            f"{SUPABASE_URL}/rest/v1/projects"
-        )
-
-        database_headers = {
-            **supabase_headers(),
-            "Content-Type": "application/json",
-            "Prefer": "return=representation",
-        }
-
-        print("Saving project to Supabase database...")
-
-        with httpx.Client(timeout=30.0) as http_client:
-
-            database_response = http_client.post(
-                database_url,
-                headers=database_headers,
-                json=project_data,
-            )
-
-        if database_response.status_code not in (
-            200,
-            201,
-        ):
-
-            print(
-                "Supabase database error:",
-                database_response.text,
-            )
-
-            # Try to remove uploaded image if DB save fails.
-            try:
-
-                with httpx.Client(timeout=30.0) as http_client:
-
-                    http_client.delete(
-                        storage_url,
-                        headers=supabase_headers(),
-                    )
-
-            except Exception:
-                pass
-
-            raise HTTPException(
-                status_code=500,
-                detail=(
-                    "Image uploaded, but project could not "
-                    "be saved to Supabase database: "
-                    f"{database_response.text}"
-                ),
-            )
-
-        saved_project = database_response.json()
-
-        print("Project saved successfully.")
-
-        # ----------------------------------------------------
-        # BASE64 FOR IMMEDIATE FRONTEND DISPLAY
-        # ----------------------------------------------------
-
-        image_base64 = base64.b64encode(
-            image_bytes
-        ).decode("utf-8")
-
-        print("=" * 60)
-        print("GENERATION COMPLETE")
-        print("=" * 60)
-        print()
-
-        return {
-            "success": True,
-
-            "image": (
-                "data:image/jpeg;base64,"
-                f"{image_base64}"
-            ),
-
-            "image_url": image_url,
-
-            "prompt": request.prompt,
-
-            "style": request.style,
-
-            "aspect_ratio": request.aspect_ratio,
-
-            "project": (
-                saved_project[0]
-                if isinstance(saved_project, list)
-                and saved_project
-                else project_data
-            ),
-        }
-
-    except HTTPException:
-        raise
-
-    except Exception as error:
-
-        print()
-        print("Hugging Face image generation error:")
-        print(error)
-
+    except Exception as exc:
         raise HTTPException(
             status_code=500,
-            detail=f"Image generation failed: {str(error)}",
-        )
+            detail=f"AI image generation failed: {exc}",
+        ) from exc
 
-
-# ============================================================
-# CREATE PROJECT
-# ============================================================
-
-@app.post("/projects")
-def create_project(
-    request: CreateProjectRequest,
-):
-
-    check_supabase()
-
-    if not request.name.strip():
+    if not isinstance(image, Image.Image):
         raise HTTPException(
-            status_code=400,
-            detail="Project name cannot be empty.",
+            status_code=500,
+            detail="Hugging Face returned an invalid image.",
         )
 
-    if not request.image_url.strip():
-        raise HTTPException(
-            status_code=400,
-            detail="Image URL cannot be empty.",
-        )
-
-    project_data = {
-        "name": request.name.strip(),
-        "filename": (
-            request.image_url.rstrip("/")
-            .split("/")
-            [-1]
-        ),
-        "image_url": request.image_url,
-        "prompt": request.prompt,
-        "style": request.style,
-        "aspect_ratio": request.aspect_ratio,
-    }
-
-    url = (
-        f"{SUPABASE_URL}/rest/v1/projects"
-    )
-
-    headers = {
-        **supabase_headers(),
-        "Content-Type": "application/json",
-        "Prefer": "return=representation",
-    }
+    # --------------------------------------------------------
+    # CONVERT IMAGE
+    # --------------------------------------------------------
 
     try:
-
-        with httpx.Client(timeout=30.0) as client:
-
-            response = client.post(
-                url,
-                headers=headers,
-                json=project_data,
-            )
-
-        if response.status_code not in (
-            200,
-            201,
-        ):
-
-            raise HTTPException(
-                status_code=500,
-                detail=(
-                    "Failed to create project: "
-                    f"{response.text}"
-                ),
-            )
-
-        data = response.json()
-
-        return {
-            "success": True,
-            "project": (
-                data[0]
-                if isinstance(data, list)
-                and data
-                else data
-            ),
-        }
-
-    except HTTPException:
-        raise
-
-    except Exception as error:
-
+        image_bytes = image_to_jpeg_bytes(image)
+    except Exception as exc:
         raise HTTPException(
             status_code=500,
-            detail=f"Project creation failed: {error}",
-        )
+            detail=f"Failed to process generated image: {exc}",
+        ) from exc
+
+    # --------------------------------------------------------
+    # CREATE UNIQUE FILENAME
+    # --------------------------------------------------------
+
+    filename = f"{uuid.uuid4().hex}.jpg"
+
+    # --------------------------------------------------------
+    # UPLOAD TO SUPABASE STORAGE
+    # --------------------------------------------------------
+
+    image_url = upload_to_supabase(
+        image_bytes=image_bytes,
+        filename=filename,
+    )
+
+    # --------------------------------------------------------
+    # SAVE PROJECT
+    # --------------------------------------------------------
+
+    project_name = (
+        request.project_name.strip()
+        if request.project_name
+        else "My AI Artwork"
+    )
+
+    if not project_name:
+        project_name = "My AI Artwork"
+
+    project = create_project(
+        name=project_name,
+        filename=filename,
+        image_url=image_url,
+        prompt=prompt,
+        style=request.style,
+        aspect_ratio=request.aspect_ratio,
+    )
+
+    # --------------------------------------------------------
+    # BASE64 IMAGE FOR FRONTEND
+    # --------------------------------------------------------
+
+    encoded_image = base64.b64encode(
+        image_bytes
+    ).decode("utf-8")
+
+    return {
+        "success": True,
+        "image": encoded_image,
+        "image_url": image_url,
+        "prompt": prompt,
+        "style": request.style,
+        "aspect_ratio": request.aspect_ratio,
+        "project": project,
+    }
 
 
 # ============================================================
-# GET ALL PROJECTS
+# GET PROJECTS
 # ============================================================
+
 
 @app.get("/projects")
 def get_projects():
+    """
+    Return all saved projects.
+    """
 
-    check_supabase()
+    require_supabase()
 
-    url = (
-        f"{SUPABASE_URL}/rest/v1/projects"
-    )
+    url = f"{SUPABASE_URL}/rest/v1/projects"
 
     params = {
         "select": "*",
         "order": "created_at.desc",
     }
 
+    headers = get_supabase_headers()
+
     try:
+        response = httpx.get(
+            url,
+            headers=headers,
+            params=params,
+            timeout=30.0,
+        )
+    except httpx.RequestError as exc:
+        raise HTTPException(
+            status_code=502,
+            detail=f"Supabase connection failed: {exc}",
+        ) from exc
 
-        with httpx.Client(timeout=30.0) as client:
-
-            response = client.get(
-                url,
-                headers=supabase_headers(),
-                params=params,
-            )
-
-        if response.status_code != 200:
-
-            raise HTTPException(
-                status_code=500,
-                detail=(
-                    "Failed to load projects: "
-                    f"{response.text}"
-                ),
-            )
-
-        projects = response.json()
-
-        return {
-            "success": True,
-            "projects": projects,
-        }
-
-    except HTTPException:
-        raise
-
-    except Exception as error:
+    if response.status_code >= 400:
+        try:
+            error_data = response.json()
+        except Exception:
+            error_data = response.text
 
         raise HTTPException(
             status_code=500,
-            detail=f"Failed to load projects: {error}",
+            detail=f"Failed to load projects: {error_data}",
         )
+
+    projects = response.json()
+
+    return {
+        "success": True,
+        "projects": projects,
+    }
 
 
 # ============================================================
 # RENAME PROJECT
 # ============================================================
 
+
 @app.put("/projects/{filename}")
 def rename_project(
     filename: str,
     request: RenameProjectRequest,
 ):
+    """
+    Rename a saved project.
+    """
 
-    check_supabase()
+    require_supabase()
 
-    if not request.name.strip():
+    new_name = request.name.strip()
+
+    if not new_name:
         raise HTTPException(
             status_code=400,
             detail="Project name cannot be empty.",
         )
 
-    encoded_filename = quote(
-        filename,
-        safe="",
-    )
-
-    url = (
-        f"{SUPABASE_URL}/rest/v1/projects"
-    )
+    url = f"{SUPABASE_URL}/rest/v1/projects"
 
     params = {
         "filename": f"eq.{filename}",
     }
 
-    update_data = {
-        "name": request.name.strip(),
+    body = {
+        "name": new_name,
     }
 
-    headers = {
-        **supabase_headers(),
-        "Content-Type": "application/json",
-        "Prefer": "return=representation",
-    }
+    headers = get_supabase_headers()
+    headers["Prefer"] = "return=representation"
 
     try:
+        response = httpx.patch(
+            url,
+            headers=headers,
+            params=params,
+            json=body,
+            timeout=30.0,
+        )
+    except httpx.RequestError as exc:
+        raise HTTPException(
+            status_code=502,
+            detail=f"Supabase connection failed: {exc}",
+        ) from exc
 
-        with httpx.Client(timeout=30.0) as client:
-
-            response = client.patch(
-                url,
-                headers=headers,
-                params=params,
-                json=update_data,
-            )
-
-        if response.status_code != 200:
-
-            raise HTTPException(
-                status_code=500,
-                detail=(
-                    "Failed to rename project: "
-                    f"{response.text}"
-                ),
-            )
-
-        data = response.json()
-
-        if not data:
-            raise HTTPException(
-                status_code=404,
-                detail="Project not found.",
-            )
-
-        return {
-            "success": True,
-            "project": data[0],
-        }
-
-    except HTTPException:
-        raise
-
-    except Exception as error:
+    if response.status_code >= 400:
+        try:
+            error_data = response.json()
+        except Exception:
+            error_data = response.text
 
         raise HTTPException(
             status_code=500,
-            detail=f"Project rename failed: {error}",
+            detail=f"Failed to rename project: {error_data}",
         )
+
+    data = response.json()
+
+    if not data:
+        raise HTTPException(
+            status_code=404,
+            detail="Project not found.",
+        )
+
+    return {
+        "success": True,
+        "project": data[0],
+    }
 
 
 # ============================================================
 # DELETE PROJECT
 # ============================================================
 
+
 @app.delete("/projects/{filename}")
-def delete_project(
-    filename: str,
-):
+def delete_project(filename: str):
+    """
+    Delete project metadata and its artwork
+    from Supabase Storage.
+    """
 
-    check_supabase()
+    require_supabase()
 
-    url = (
-        f"{SUPABASE_URL}/rest/v1/projects"
-    )
+    # --------------------------------------------------------
+    # Delete database record
+    # --------------------------------------------------------
+
+    url = f"{SUPABASE_URL}/rest/v1/projects"
 
     params = {
         "filename": f"eq.{filename}",
     }
 
+    headers = get_supabase_headers()
+
     try:
-
-        # ----------------------------------------------------
-        # FIRST GET PROJECT
-        # ----------------------------------------------------
-
-        with httpx.Client(timeout=30.0) as client:
-
-            get_response = client.get(
-                url,
-                headers=supabase_headers(),
-                params=params,
-            )
-
-        if get_response.status_code != 200:
-
-            raise HTTPException(
-                status_code=500,
-                detail=(
-                    "Failed to find project: "
-                    f"{get_response.text}"
-                ),
-            )
-
-        projects = get_response.json()
-
-        if not projects:
-
-            raise HTTPException(
-                status_code=404,
-                detail="Project not found.",
-            )
-
-        project = projects[0]
-
-        # ----------------------------------------------------
-        # DELETE IMAGE FROM STORAGE
-        # ----------------------------------------------------
-
-        storage_url = (
-            f"{SUPABASE_URL}/storage/v1/object/"
-            f"{SUPABASE_BUCKET}/{quote(filename)}"
+        response = httpx.delete(
+            url,
+            headers=headers,
+            params=params,
+            timeout=30.0,
         )
+    except httpx.RequestError as exc:
+        raise HTTPException(
+            status_code=502,
+            detail=f"Supabase connection failed: {exc}",
+        ) from exc
 
-        print(
-            "Deleting image from Supabase Storage:",
-            filename,
-        )
-
-        with httpx.Client(timeout=30.0) as client:
-
-            storage_response = client.delete(
-                storage_url,
-                headers=supabase_headers(),
-            )
-
-        if storage_response.status_code not in (
-            200,
-            204,
-        ):
-
-            print(
-                "Storage deletion warning:",
-                storage_response.text,
-            )
-
-        # ----------------------------------------------------
-        # DELETE DATABASE RECORD
-        # ----------------------------------------------------
-
-        print(
-            "Deleting project from database:",
-            filename,
-        )
-
-        with httpx.Client(timeout=30.0) as client:
-
-            database_response = client.delete(
-                url,
-                headers=supabase_headers(),
-                params=params,
-            )
-
-        if database_response.status_code not in (
-            200,
-            204,
-        ):
-
-            raise HTTPException(
-                status_code=500,
-                detail=(
-                    "Image was deleted from Storage, "
-                    "but database deletion failed: "
-                    f"{database_response.text}"
-                ),
-            )
-
-        print("Project deleted successfully.")
-
-        return {
-            "success": True,
-            "message": "Project deleted successfully.",
-            "filename": filename,
-        }
-
-    except HTTPException:
-        raise
-
-    except Exception as error:
+    if response.status_code >= 400:
+        try:
+            error_data = response.json()
+        except Exception:
+            error_data = response.text
 
         raise HTTPException(
             status_code=500,
-            detail=f"Project deletion failed: {error}",
+            detail=f"Failed to delete project: {error_data}",
         )
+
+    # --------------------------------------------------------
+    # Delete image from Storage
+    # --------------------------------------------------------
+
+    try:
+        delete_supabase_file(filename)
+    except HTTPException:
+        # Database record is already deleted.
+        # Return success rather than making the UI fail because
+        # of a storage cleanup issue.
+        pass
+
+    return {
+        "success": True,
+        "message": "Project deleted successfully.",
+    }
+
+
+# ============================================================
+# ANALYZE ARTWORK
+# ============================================================
+
+
+@app.post("/analyze-artwork")
+def analyze_artwork():
+    """
+    Placeholder endpoint for future artwork analysis.
+
+    The current MVP does not require this endpoint for
+    artwork generation.
+    """
+
+    return {
+        "success": True,
+        "message": "Artwork analysis endpoint is available.",
+    }
+
+
+# ============================================================
+# RUN DIRECTLY
+# ============================================================
+
+if __name__ == "__main__":
+    import uvicorn
+
+    uvicorn.run(
+        "main:app",
+        host="0.0.0.0",
+        port=8000,
+    )
