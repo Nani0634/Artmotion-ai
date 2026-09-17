@@ -1,0 +1,13 @@
+{
+  "name": "artmotion-ai",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "dev": "concurrently \"npm run dev:frontend\" \"npm run dev:backend\"",
+    "dev:frontend": "cd frontend && npm run dev",
+    "dev:backend": "cd backend && .\\venv\\Scripts\\python.exe -m uvicorn main:app --reload --reload-exclude \"venv/**\""
+  },
+  "devDependencies": {
+    "concurrently": "^9.0.0"
+  }
+}

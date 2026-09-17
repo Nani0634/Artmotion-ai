@@ -1,0 +1,397 @@
+# ============================================================
+# ART MOTION AI - ROOT GITIGNORE
+# ============================================================
+
+
+# ============================================================
+# ENVIRONMENT VARIABLES & SECRETS
+# ============================================================
+
+.env
+.env.local
+.env.development
+.env.development.local
+.env.test
+.env.test.local
+.env.production
+.env.production.local
+
+*.env
+*.env.local
+
+# Keep example environment files
+!.env.example
+!*.env.example
+
+
+# ============================================================
+# NODE / REACT / VITE
+# ============================================================
+
+node_modules/
+**/node_modules/
+
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+.npm/
+.yarn/
+.pnpm-store/
+
+.vite/
+**/.vite/
+
+dist/
+**/dist/
+
+build/
+**/build/
+
+coverage/
+**/coverage/
+
+.cache/
+**/.cache/
+
+.parcel-cache/
+.turbo/
+
+*.tsbuildinfo
+
+
+# ============================================================
+# NEXT.JS
+# ============================================================
+
+.next/
+**/.next/
+
+out/
+**/out/
+
+
+# ============================================================
+# PYTHON
+# ============================================================
+
+__pycache__/
+**/__pycache__/
+
+*.py[cod]
+*$py.class
+
+*.pyo
+*.pyd
+
+.pytest_cache/
+**/.pytest_cache/
+
+.mypy_cache/
+**/.mypy_cache/
+
+.ruff_cache/
+**/.ruff_cache/
+
+.pyre/
+
+.python-version
+
+# Virtual environments
+venv/
+**/venv/
+
+env/
+**/env/
+
+.venv/
+**/.venv/
+
+ENV/
+**/ENV/
+
+env.bak/
+**/env.bak/
+
+venv.bak/
+**/venv.bak/
+
+
+# ============================================================
+# PYTHON BUILD / PACKAGING
+# ============================================================
+
+build/
+dist/
+*.egg-info/
+**/*.egg-info/
+
+.eggs/
+
+pip-wheel-metadata/
+
+MANIFEST
+
+
+# ============================================================
+# PYTHON TEST / COVERAGE
+# ============================================================
+
+.coverage
+.coverage.*
+htmlcov/
+
+.tox/
+.nox/
+
+.pytest_cache/
+
+
+# ============================================================
+# DATABASE
+# ============================================================
+
+*.db
+*.sqlite
+*.sqlite3
+
+database/*.db
+database/*.sqlite
+database/*.sqlite3
+
+
+# ============================================================
+# GENERATED ARTWORK / GENERATED FILES
+# ============================================================
+
+generated_assets/
+generated/
+outputs/
+output/
+
+# Ignore generated image files
+*.png
+*.jpg
+*.jpeg
+*.webp
+
+# Keep important source assets if needed
+!frontend/src/assets/
+!frontend/src/assets/**
+
+
+# ============================================================
+# LOG FILES
+# ============================================================
+
+*.log
+logs/
+**/logs/
+
+npm-debug.log*
+yarn-debug.log*
+pnpm-debug.log*
+
+uvicorn.log
+
+
+# ============================================================
+# TEMPORARY FILES
+# ============================================================
+
+*.tmp
+*.temp
+*.bak
+*.backup
+*.swp
+*.swo
+
+.tmp/
+temp/
+tmp/
+
+
+# ============================================================
+# OPERATING SYSTEM FILES
+# ============================================================
+
+# Windows
+Thumbs.db
+Thumbs.db:encryptable
+ehthumbs.db
+ehthumbs_vista.db
+*.stackdump
+
+# Windows desktop.ini
+desktop.ini
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Linux
+*~
+
+
+# ============================================================
+# IDE / EDITOR
+# ============================================================
+
+# VS Code
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json
+
+# Visual Studio
+.vs/
+
+# JetBrains
+.idea/
+
+# Sublime Text
+*.sublime-workspace
+*.sublime-project
+
+
+# ============================================================
+# TYPESCRIPT / JAVASCRIPT
+# ============================================================
+
+*.tsbuildinfo
+
+.eslintcache
+
+# Oxlint
+.oxlint/
+
+
+# ============================================================
+# PYTHON IDE FILES
+# ============================================================
+
+.pydevproject
+.project
+
+# Jupyter Notebook
+.ipynb_checkpoints/
+
+
+# ============================================================
+# OS / FILE SYSTEM
+# ============================================================
+
+$RECYCLE.BIN/
+.NTUSER.DAT*
+Thumbs.db
+
+
+# ============================================================
+# CLOUD / DEPLOYMENT
+# ============================================================
+
+.vercel/
+.netlify/
+.render/
+
+
+# ============================================================
+# LOCAL DEVELOPMENT
+# ============================================================
+
+*.local
+
+# But allow example configuration
+!*.example
+!*.example.*
+
+
+# ============================================================
+# SECRETS / CREDENTIALS
+# ============================================================
+
+*.pem
+*.key
+*.crt
+*.p12
+*.pfx
+
+credentials.json
+service-account.json
+serviceAccount.json
+
+secrets/
+**/secrets/
+
+
+# ============================================================
+# SUPABASE LOCAL
+# ============================================================
+
+.supabase/
+**/.supabase/
+
+
+# ============================================================
+# HUGGING FACE / AI CACHE
+# ============================================================
+
+.cache/
+**/.cache/
+
+huggingface/
+**/huggingface/
+
+
+# ============================================================
+# ARCHIVES
+# ============================================================
+
+*.zip
+*.tar
+*.tar.gz
+*.rar
+*.7z
+
+
+# ============================================================
+# LARGE MEDIA / LOCAL EXPORTS
+# ============================================================
+
+*.mp4
+*.mov
+*.avi
+*.mkv
+
+exports/
+**/exports/
+
+
+# ============================================================
+# PROJECT-SPECIFIC LOCAL FILES
+# ============================================================
+
+# Local notes
+notes/
+**/notes/
+
+# Temporary screenshots
+screenshots/
+**/screenshots/
+
+
+# ============================================================
+# IMPORTANT FILES THAT SHOULD REMAIN TRACKED
+# ============================================================
+
+!.gitignore
+!README.md
+!requirements.txt
+!package.json
+!package-lock.json
+!vite.config.ts
+!tsconfig.json
+!tsconfig.app.json
+!tsconfig.node.json
+!.env.example
