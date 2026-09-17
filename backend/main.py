@@ -64,7 +64,7 @@ app.add_middleware(
 
 if HF_TOKEN:
     hf_client = InferenceClient(
-        provider="hf-inference",
+        provider="auto",
         api_key=HF_TOKEN,
     )
 else:
