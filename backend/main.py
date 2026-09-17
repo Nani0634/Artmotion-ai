@@ -465,9 +465,10 @@ def generate_art(request: GenerateArtRequest):
     # BASE64 IMAGE FOR FRONTEND
     # --------------------------------------------------------
 
-    encoded_image = base64.b64encode(
-        image_bytes
-    ).decode("utf-8")
+    encoded_image = (
+    "data:image/jpeg;base64,"
+    + base64.b64encode(image_bytes).decode("utf-8")
+)
 
     return {
         "success": True,
